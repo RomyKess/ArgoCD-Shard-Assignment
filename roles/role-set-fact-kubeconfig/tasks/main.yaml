@@ -1,0 +1,15 @@
+- name: Create kubeconfig Tempfile
+  tempfile:
+    state: file
+    suffix: temp
+  register: tempfile_kubeconfig
+  notify: Delete kubeconfig Tempfile
+
+- name: Insert kubeconfig to Tempfile
+  copy:
+    dest: '{{ tempfile_kubeconfig.path }}'
+    content: "{{ lookup('hashi_vault', 'secret=path/kubeconfigs/{{ cluster_name }}:value') }}"
+
+- name: Set kubeconfig Path
+  set_fact:
+    kubeconfig_path: "{{ tempfile_kubeconfig.path }}"

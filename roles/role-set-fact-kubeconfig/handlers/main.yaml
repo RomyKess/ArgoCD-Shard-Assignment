@@ -1,0 +1,5 @@
+---
+- name: Delete kubeconfig Tempfile
+  file:
+      state: absent
+      path: "{{ tempfile_kubeconfig.path }}"
