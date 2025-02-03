@@ -1,7 +1,7 @@
 - name: Get {{ cluster_name }} kubecondig
   block:
     - include_role:
-        name: role-set-fact-kubeconfig
+        name: role_set_fact_kubeconfig
     - set_fact:
         cluster_kubeconfig_path: "{{ kubeconfig_path }}"
 
