@@ -1,0 +1,129 @@
+- name: Get {{ cluster_name }} kubecondig
+  block:
+    - include_role:
+        name: role-set-fact-kubeconfig
+    - set_fact:
+        cluster_kubeconfig_path: "{{ kubeconfig_path }}"
+
+- name: Get ArgoCD API token from Vault
+  set_fact:
+    argocd_token: "{{ lookup('hashi_vault', 'path/argocd-api-tokens:{{ client }}.{{ floating_hostname }}') }}"
+
+- name: Get a List of All Connected Clusters to an ArgoCD Instance
+  uri:
+    url: "{{ gitops_url }}/api/v1/clusters"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ argocd_token }}"
+      Content-Type: "application/json"
+    return_content: true
+  register: cluster_list
+
+- name: Parse Cluster List
+  set_fact:
+    clusters: "{{ cluster_list.json['items'] }}"
+    
+- name: Filter Clusters by Connection State
+  set_fact:
+    chosen_clusters: "{{ clusters | selectattr('ConnectionState.status', '==', 'Successful') | list }}"
+
+- name: Sum Amount of Clusters with Connection State of Choice
+  set_fact:
+    clusters_amount: "{{ chosen_clusters | length }}"
+
+- name: Get Application Controller Pods in the ArgoCD Namespace
+  k8s_info:
+    verify_ssl: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ gitops_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name={{ controller_name }}-application-controller"
+  register: controllers
+
+- name: Sum Amount of Controller Pods
+  set_fact:
+    controllers_amount: "{{ controllers.resources | length }}"
+
+- name: Change Type to List
+  set_fact:
+    controllers_list: "{{ controllers.resources | list }}"
+
+- name: Get All Cluster Secrets in the ArgoCD Namespace
+  k8s_info:
+    verify_ssl: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    namespace: "{{ gitops_namespace }}"
+    label_selectors:
+      - argocd.argoproj.io/secret-type=cluster
+  register: all_secrets
+
+- name: Extract Secret's data
+  set_fact:
+    secret_data: "{{ all_secrets.resources | map(attribute='data.name') | map('b64decoded') }}"
+
+- name: Change Type to Empty List
+  set_fact:
+    matching_secrets: []
+
+- name: Filter Secrets Matching Chosen Cluster Names
+  set_fact:
+    matching_secrets: "{{ matching_secrets + (secret_data | select('search', '\\b' + item['name'] + '\\b')) | list) | unique }}"
+  loop: "{{ chosen_clusters }}"
+
+- name: Change Type to Empty List
+  set_fact:
+    secret_to_patch: []
+
+- name: Find Full Matching Secrets' Names
+  set_fact:
+    secret_to_patch: "{{ (secret_to_patch + (all_secrets.resources | selectattr('metadata.name', 'search', '\\b' + item + '\\b')) | list) | unique }}"
+  loop: "{{ matching_secrets }}"
+
+- name: Find Already Patched Secrets
+  set_fact:
+    patched_secrets: "{{ all_secrets.resources | selectattr('data.shard', 'defined') | list }}"
+
+- name: Clean Patched Secrets
+  kubernetes.core.k8s_json_patch:
+    verify_ssl: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ gitops_namespace }}"
+    kind: Secret
+    name: "{{ item.metadata.name }}"
+    patch:
+      - op: remove
+        path: /data/shard
+  loop: "{{ patched_secrets }}"
+  no_log: true
+
+- name: Calculate Amount of Clusters for Each Shard
+  set_fact:
+    result: "{{ (clusters_amount | int -1) / controllers_amount | int }}"
+  when: "(controllers_amount | int > 0) and (clusters_amount | int -1 > 0) and (clusters_amount | int -1 >= controllers_amount | int)"
+
+- name: Calculate Remainder of Division
+  set_fact:
+    remainder: "{{ (clusters_amount | int -1) % controllers_amount | int }}"
+  when: "(controllers_amount | int > 0) and (clusters_amount | int -1 > 0) and (clusters_amount | int -1 >= controllers_amount | int)"
+
+- name: Initialize Index Counter
+  set_fact:
+    secret_index: 0
+
+- name: Include Task loop-clusters
+  include_tasks: loop-clusters.yaml
+  loop: "{{ range(0, controllers_amount | int) }}"
+  loop_control:
+    loop_var: shard
+  when: "clusters_amount | int -1 >= controllers_amount | int"
+
+- name: Handle Remainder
+  include_tasks: patch-secrets.yaml
+  loop: "{{ range(0, remainder | int) }}"
+  loop_control:
+    loop_var: shard
+  when: "(clusters_amount | int -1 >= controllers_amount | int) and (remainder | int != 0)"

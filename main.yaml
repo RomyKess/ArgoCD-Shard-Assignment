@@ -1,0 +1,11 @@
+- name: Divide Clusters That are Turned On Equally Between Application Controllers
+  hosts: "all"
+  gather_facts: false
+
+  vars:
+    gitops_url: "https://{{ client }}-gitops.apps.{{ floating_hostname }}.basedomain"
+    gitops_namespace: "gitop-{{ client }}"
+    controller_name: "{{ client }}-gitops"
+
+  roles:
+    - { role: role_assign_shards, tags: ['connect_argos'], delegate_to: localhost, connection: local }

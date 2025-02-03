@@ -1,0 +1,4 @@
+- name: Include Task patch-secrets
+  include_tasks: patch-secrets.yaml
+  loop: "{{ range(0, result | int) | list }}"
+  when: "secret_index | int <= result | int * controllers_amount | int"
